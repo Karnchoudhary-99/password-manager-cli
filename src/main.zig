@@ -30,14 +30,32 @@ fn printUsage(writer: anytype) !void {
     try writer.writeAll(usage_text);
 }
 
+/// Value of `--<name> <value>` or `--<name>=<value>`, if present.
 fn flagValue(args: []const []const u8, name: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.startsWith(u8, args[i], "--") and std.mem.indexOfScalar(u8, args[i], '=') != null) {
-            const eq = std.mem.indexOfScalar(u8, args[i], '=').?;
-            if (std.mem.eql(u8, args[i][2..eq], name)) return args[i][eq + 1 ..];
+        const arg = args[i];
+        if (!std.mem.startsWith(u8, arg, "--")) continue;
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+            if (std.mem.eql(u8, arg[2..eq], name)) return arg[eq + 1 ..];
+        } else if (arg.len == name.len + 2 and std.mem.eql(u8, arg[2..], name)) {
+            if (i + 1 < args.len) return args[i + 1];
         }
-        if (std.mem.eql(u8, args[i], name) and i + 1 < args.len) return args[i + 1];
+    }
+    return null;
+}
+
+/// First positional argument, skipping `--flag <value>` pairs and bare flags.
+fn firstPositional(args: []const []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--username") or std.mem.eql(u8, arg, "--password") or std.mem.eql(u8, arg, "--notes")) {
+            i += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) continue;
+        return arg;
     }
     return null;
 }
@@ -128,6 +146,44 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "add")) {
+        const name = firstPositional(rest) orelse {
+            stderr.writeAll("pm: add needs an entry name\n") catch {};
+            return error.MissingArgument;
+        };
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        if (vault.find(name) != null) {
+            if (!hasFlag(rest, "--force")) {
+                stderr.writeAll("pm: entry already exists (use --force to overwrite)\n") catch {};
+                return error.EntryExists;
+            }
+            _ = vault.remove(name);
+        }
+        var entry_password: []const u8 = undefined;
+        var owned_entry_password: ?[]u8 = null;
+        defer if (owned_entry_password) |p| allocator.free(p);
+        if (flagValue(rest, "password")) |p| {
+            entry_password = p;
+        } else {
+            const prompt = try std.fmt.allocPrint(allocator, "Password for {s}: ", .{name});
+            defer allocator.free(prompt);
+            owned_entry_password = try password_mod.promptPassword(allocator, prompt);
+            entry_password = owned_entry_password.?;
+        }
+        try vault.add(.{
+            .name = name,
+            .username = flagValue(rest, "username") orelse "",
+            .password = entry_password,
+            .notes = flagValue(rest, "notes") orelse "",
+        });
+        try saveVault(&vault, vault_path, master, allocator);
+        try stdout.print("added {s}\n", .{name});
+        return;
+    }
+
     stderr.writeAll("pm: unknown command (try: pm --help)\n") catch {};
     return error.UnknownCommand;
 }
@@ -149,7 +205,7 @@ pub fn main() void {
             error.FileNotFound => stderr.print("pm: no vault found (run: pm init first)\n", .{}) catch {},
             error.AuthenticationFailed => stderr.print("pm: wrong master password or corrupt vault\n", .{}) catch {},
             error.InvalidMagic, error.UnsupportedVersion => stderr.print("pm: not a pm vault file (or corrupt)\n", .{}) catch {},
-            error.VaultExists, error.PasswordMismatch, error.UnknownCommand => {},
+            error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument => {},
             else => stderr.print("pm: {s}\n", .{@errorName(err)}) catch {},
         }
         std.process.exit(1);
