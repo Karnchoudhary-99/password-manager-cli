@@ -25,9 +25,28 @@ $PM get github
 echo "--- search (case-insensitive, over name/username/notes) ---"
 $PM search GIT
 $PM search savings
+echo "--- generate a password, add with --generate ---"
+$PM gen --length 16
+$PM add api --username demo-api --generate --notes "generated entry"
+$PM get api
+echo "--- export (CSV), remove, re-import ---"
+$PM export --format csv --out "$DEMO_DIR/export.csv"
+$PM remove bank
+$PM list
+$PM import "$DEMO_DIR/export.csv" --format csv
+$PM list
+echo "--- backup + restore ---"
+$PM backup "$DEMO_DIR/vault.bak"
+$PM remove api
+$PM restore --force "$DEMO_DIR/vault.bak"
+$PM list
 echo "--- remove bank, list again ---"
 $PM remove bank
 $PM list
+echo "--- change master password: old refused, new works ---"
+PM_NEW_MASTER_PASSWORD="demo-master-password-v2" $PM change-password
+PM_MASTER_PASSWORD=demo-master-password $PM list || true
+PM_MASTER_PASSWORD=demo-master-password-v2 $PM list
 echo "--- wrong master password is refused ---"
 PM_MASTER_PASSWORD=wrong-password $PM list || true
 echo "--- demo done (vault was in $DEMO_DIR, now deleted) ---"

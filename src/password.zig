@@ -14,7 +14,22 @@ pub fn promptPassword(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     if (std.process.getEnvVarOwned(allocator, "PM_MASTER_PASSWORD")) |pw| {
         return pw;
     } else |_| {}
+    return promptInteractive(allocator, prompt);
+}
 
+/// Read a NEW master password for `change-password`: `PM_NEW_MASTER_PASSWORD`
+/// first (scripts/tests), else an interactive prompt. It must NOT fall back
+/// to `PM_MASTER_PASSWORD` — that would silently "change" the password to
+/// itself. The caller owns the returned slice.
+pub fn promptNewPassword(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
+    if (std.process.getEnvVarOwned(allocator, "PM_NEW_MASTER_PASSWORD")) |pw| {
+        return pw;
+    } else |_| {}
+    return promptInteractive(allocator, prompt);
+}
+
+/// Interactive prompt with terminal echo disabled on a TTY.
+fn promptInteractive(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     const stderr = std.io.getStdErr().writer();
     try stderr.writeAll(prompt);
     const stdin = std.io.getStdIn();
