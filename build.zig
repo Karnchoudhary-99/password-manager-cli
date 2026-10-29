@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
 
     // One test artifact per module: `zig test` on main.zig alone only runs
     // main's own tests, so each module gets its own artifact here and
-    // `zig build test` runs the whole suite (14 unique tests; the crypto
+    // `zig build test` runs the whole suite (the crypto
     // tests also run a second time as part of the vault artifact).
     const test_step = b.step("test", "Run unit tests");
     const test_files = [_][]const u8{
@@ -28,6 +28,8 @@ pub fn build(b: *std.Build) void {
         "src/crypto.zig",
         "src/vault.zig",
         "src/password.zig",
+        "src/generator.zig",
+        "src/ioformat.zig",
     };
     for (test_files) |file| {
         const unit_tests = b.addTest(.{
