@@ -184,6 +184,36 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "get")) {
+        const name = firstPositional(rest) orelse {
+            stderr.writeAll("pm: get needs an entry name\n") catch {};
+            return error.MissingArgument;
+        };
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        const entry = vault.find(name) orelse {
+            stderr.print("pm: no such entry '{s}'\n", .{name}) catch {};
+            return error.NoSuchEntry;
+        };
+        try stdout.print("username: {s}\npassword: {s}\n", .{ entry.username, entry.password });
+        if (entry.notes.len > 0) try stdout.print("notes: {s}\n", .{entry.notes});
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "list")) {
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        // Names only: listing must never leak secrets.
+        for (vault.entries.items) |e| {
+            try stdout.print("{s}\n", .{e.name});
+        }
+        return;
+    }
+
     stderr.writeAll("pm: unknown command (try: pm --help)\n") catch {};
     return error.UnknownCommand;
 }
@@ -205,7 +235,7 @@ pub fn main() void {
             error.FileNotFound => stderr.print("pm: no vault found (run: pm init first)\n", .{}) catch {},
             error.AuthenticationFailed => stderr.print("pm: wrong master password or corrupt vault\n", .{}) catch {},
             error.InvalidMagic, error.UnsupportedVersion => stderr.print("pm: not a pm vault file (or corrupt)\n", .{}) catch {},
-            error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument => {},
+            error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument, error.NoSuchEntry => {},
             else => stderr.print("pm: {s}\n", .{@errorName(err)}) catch {},
         }
         std.process.exit(1);
