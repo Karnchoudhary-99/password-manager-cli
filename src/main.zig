@@ -20,6 +20,7 @@ const usage_text =
     \\  import <file>        import entries from a JSON or CSV export
     \\  backup [path]        copy the sealed vault file (default: <vault>.bak)
     \\  restore <file>       replace the vault with a sealed backup copy
+    \\  change-password      re-seal the vault under a new master password
     \\
     \\Options:
     \\  --username <u>       username for `add`
@@ -38,6 +39,7 @@ const usage_text =
     \\Environment:
     \\  PM_VAULT             vault file path (default: $HOME/.pm-vault)
     \\  PM_MASTER_PASSWORD   master password (else prompted, hidden)
+    \\  PM_NEW_MASTER_PASSWORD new master password for `change-password`
     \\
 ;
 
@@ -322,6 +324,26 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
             }
         }
         if (found == 0) try stdout.writeAll("(no matches)\n");
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "change-password")) {
+        const old_master = try password_mod.promptPassword(allocator, "Current master password: ");
+        defer allocator.free(old_master);
+        var vault = try loadVault(allocator, vault_path, old_master);
+        defer vault.deinit();
+        const new_master = try password_mod.promptNewPassword(allocator, "New master password: ");
+        defer allocator.free(new_master);
+        const confirm = try password_mod.promptNewPassword(allocator, "Confirm new master password: ");
+        defer allocator.free(confirm);
+        if (!std.mem.eql(u8, new_master, confirm)) {
+            stderr.writeAll("pm: passwords do not match\n") catch {};
+            return error.PasswordMismatch;
+        }
+        // Re-sealing mints a fresh salt and nonce, so the new vault file
+        // is unlinkable to the old one.
+        try saveVault(&vault, vault_path, new_master, allocator);
+        try stdout.print("master password changed\n", .{});
         return;
     }
 
