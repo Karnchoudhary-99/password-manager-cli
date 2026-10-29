@@ -214,6 +214,44 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "remove")) {
+        const name = firstPositional(rest) orelse {
+            stderr.writeAll("pm: remove needs an entry name\n") catch {};
+            return error.MissingArgument;
+        };
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        if (!vault.remove(name)) {
+            stderr.print("pm: no such entry '{s}'\n", .{name}) catch {};
+            return error.NoSuchEntry;
+        }
+        try saveVault(&vault, vault_path, master, allocator);
+        try stdout.print("removed {s}\n", .{name});
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "search")) {
+        const query = firstPositional(rest) orelse {
+            stderr.writeAll("pm: search needs a query\n") catch {};
+            return error.MissingArgument;
+        };
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        var found: usize = 0;
+        for (vault.entries.items) |e| {
+            if (vault_mod.matches(e, query)) {
+                try stdout.print("{s}\n", .{e.name});
+                found += 1;
+            }
+        }
+        if (found == 0) try stdout.writeAll("(no matches)\n");
+        return;
+    }
+
     stderr.writeAll("pm: unknown command (try: pm --help)\n") catch {};
     return error.UnknownCommand;
 }
