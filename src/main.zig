@@ -1,6 +1,8 @@
 const std = @import("std");
 const vault_mod = @import("vault.zig");
 const password_mod = @import("password.zig");
+const generator_mod = @import("generator.zig");
+const ioformat_mod = @import("ioformat.zig");
 const Vault = vault_mod.Vault;
 
 const usage_text =
@@ -13,12 +15,25 @@ const usage_text =
     \\  list                 list entry names
     \\  remove <name>        delete an entry
     \\  search <query>       search entries by name, username or notes
+    \\  gen                  generate a password (prints entropy to stderr)
+    \\  export               export entries as plaintext JSON or CSV
+    \\  import <file>        import entries from a JSON or CSV export
+    \\  backup [path]        copy the sealed vault file (default: <vault>.bak)
+    \\  restore <file>       replace the vault with a sealed backup copy
     \\
     \\Options:
     \\  --username <u>       username for `add`
     \\  --password <p>       password for `add` (else prompted, hidden)
     \\  --notes <n>          notes for `add`
-    \\  --force              overwrite on `add`, replace on `init`
+    \\  --force              overwrite on `add`, replace on `init`/`restore`
+    \\  --generate           generate the entry password on `add`
+    \\  --length <n>         password length for `gen`/`add --generate` (default 20)
+    \\  --no-symbols         exclude symbols from generated passwords
+    \\  --no-digits          exclude digits from generated passwords
+    \\  --no-uppercase       exclude uppercase letters from generated passwords
+    \\  --no-lowercase       exclude lowercase letters from generated passwords
+    \\  --format <json|csv>  format for `export`/`import` (default json)
+    \\  --out <path>         output file for `export` (default: stdout)
     \\
     \\Environment:
     \\  PM_VAULT             vault file path (default: $HOME/.pm-vault)
@@ -50,7 +65,7 @@ fn firstPositional(args: []const []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--username") or std.mem.eql(u8, arg, "--password") or std.mem.eql(u8, arg, "--notes")) {
+        if (std.mem.eql(u8, arg, "--username") or std.mem.eql(u8, arg, "--password") or std.mem.eql(u8, arg, "--notes") or std.mem.eql(u8, arg, "--length") or std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "--out")) {
             i += 1;
             continue;
         }
@@ -65,6 +80,57 @@ fn hasFlag(args: []const []const u8, name: []const u8) bool {
         if (std.mem.eql(u8, a, name)) return true;
     }
     return false;
+}
+
+const CliError = error{
+    InvalidLength,
+    InvalidFormat,
+};
+
+/// Generator options from `--length` / `--no-*` flags. Length is capped
+/// at 512: longer passwords add no usable security and invite abuse.
+fn parseGenOptions(args: []const []const u8) !generator_mod.Options {
+    var opts = generator_mod.Options{};
+    if (flagValue(args, "length")) |raw| {
+        opts.length = std.fmt.parseInt(usize, raw, 10) catch return CliError.InvalidLength;
+        if (opts.length < 1 or opts.length > 512) return CliError.InvalidLength;
+    }
+    if (hasFlag(args, "--no-symbols")) opts.use_symbols = false;
+    if (hasFlag(args, "--no-digits")) opts.use_digits = false;
+    if (hasFlag(args, "--no-uppercase")) opts.use_upper = false;
+    if (hasFlag(args, "--no-lowercase")) opts.use_lower = false;
+    return opts;
+}
+
+/// `--format` flag for export/import: json by default, csv on request.
+fn parseFormat(args: []const []const u8) !ioformat_mod.Format {
+    const raw = flagValue(args, "format") orelse return .json;
+    if (std.mem.eql(u8, raw, "json")) return .json;
+    if (std.mem.eql(u8, raw, "csv")) return .csv;
+    return CliError.InvalidFormat;
+}
+
+/// Read a whole file by path (absolute or relative to cwd).
+fn readPathBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const loc = try openVaultDir(allocator, path);
+    defer allocator.free(loc.name);
+    var dir = loc.dir;
+    const needs_close = dir.fd != std.fs.cwd().fd;
+    defer if (needs_close) dir.close();
+    return dir.readFileAlloc(allocator, loc.name, 16 * 1024 * 1024);
+}
+
+/// Write bytes to a path with `0600` permissions (exports and backups
+/// hold secrets, sealed or not). Creates/truncates the file.
+fn writePathBytes(path: []const u8, bytes: []const u8, allocator: std.mem.Allocator) !void {
+    const loc = try openVaultDir(allocator, path);
+    defer allocator.free(loc.name);
+    var dir = loc.dir;
+    const needs_close = dir.fd != std.fs.cwd().fd;
+    defer if (needs_close) dir.close();
+    var file = try dir.createFile(loc.name, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    try file.writeAll(bytes);
 }
 
 /// Split a vault path into the directory to open and the file name inside it.
@@ -165,8 +231,14 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         var entry_password: []const u8 = undefined;
         var owned_entry_password: ?[]u8 = null;
         defer if (owned_entry_password) |p| allocator.free(p);
+        var generated: ?[]u8 = null;
+        defer if (generated) |g| allocator.free(g);
         if (flagValue(rest, "password")) |p| {
             entry_password = p;
+        } else if (hasFlag(rest, "--generate")) {
+            const opts = try parseGenOptions(rest);
+            generated = try generator_mod.generate(allocator, std.crypto.random, opts);
+            entry_password = generated.?;
         } else {
             const prompt = try std.fmt.allocPrint(allocator, "Password for {s}: ", .{name});
             defer allocator.free(prompt);
@@ -181,6 +253,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         });
         try saveVault(&vault, vault_path, master, allocator);
         try stdout.print("added {s}\n", .{name});
+        if (generated) |g| try stdout.print("generated password: {s}\n", .{g});
         return;
     }
 
@@ -252,6 +325,117 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "gen")) {
+        const opts = try parseGenOptions(rest);
+        const pw = try generator_mod.generate(allocator, std.crypto.random, opts);
+        defer allocator.free(pw);
+        // The password goes to stdout so it can be captured (`pw=$(pm gen)`);
+        // the entropy report goes to stderr so it never pollutes the capture.
+        try stdout.print("{s}\n", .{pw});
+        const bits = generator_mod.entropyBits(opts);
+        try stderr.print("entropy: {d:.1} bits ({s})\n", .{ bits, generator_mod.strength(bits) });
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "export")) {
+        const format = try parseFormat(rest);
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        const text = switch (format) {
+            .json => try ioformat_mod.toJson(allocator, vault.entries.items),
+            .csv => try ioformat_mod.toCsv(allocator, vault.entries.items),
+        };
+        defer allocator.free(text);
+        if (flagValue(rest, "out")) |out_path| {
+            try writePathBytes(out_path, text, allocator);
+            try stdout.print("exported {d} entries to {s}\n", .{ vault.entries.items.len, out_path });
+        } else {
+            stderr.writeAll("warning: plaintext export — entries contain secrets\n") catch {};
+            try stdout.writeAll(text);
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "import")) {
+        const file_path = firstPositional(rest) orelse {
+            stderr.writeAll("pm: import needs a file path\n") catch {};
+            return error.MissingArgument;
+        };
+        const format = try parseFormat(rest);
+        const text = try readPathBytes(allocator, file_path);
+        defer allocator.free(text);
+        const imported = switch (format) {
+            .json => try ioformat_mod.fromJson(allocator, text),
+            .csv => try ioformat_mod.fromCsv(allocator, text),
+        };
+        defer {
+            for (imported) |e| {
+                allocator.free(e.name);
+                allocator.free(e.username);
+                allocator.free(e.password);
+                allocator.free(e.notes);
+            }
+            allocator.free(imported);
+        }
+        const master = try password_mod.promptPassword(allocator, "Master password: ");
+        defer allocator.free(master);
+        var vault = try loadVault(allocator, vault_path, master);
+        defer vault.deinit();
+        const force = hasFlag(rest, "--force");
+        var added: usize = 0;
+        var skipped: usize = 0;
+        for (imported) |e| {
+            if (vault.find(e.name) != null) {
+                if (!force) {
+                    skipped += 1;
+                    continue;
+                }
+                _ = vault.remove(e.name);
+            }
+            try vault.add(e);
+            added += 1;
+        }
+        try saveVault(&vault, vault_path, master, allocator);
+        try stdout.print("imported {d} entries, skipped {d} existing\n", .{ added, skipped });
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "backup")) {
+        // No master password needed: a backup is a byte copy of the
+        // already-sealed vault file, so it stays encrypted at rest.
+        // The default destination is allocated; a positional one borrows
+        // from argv and must NOT be freed.
+        var owned_dest: ?[]u8 = null;
+        defer if (owned_dest) |d| allocator.free(d);
+        const dest = firstPositional(rest) orelse blk: {
+            owned_dest = try std.fmt.allocPrint(allocator, "{s}.bak", .{vault_path});
+            break :blk owned_dest.?;
+        };
+        const bytes = try readPathBytes(allocator, vault_path);
+        defer allocator.free(bytes);
+        try writePathBytes(dest, bytes, allocator);
+        try stdout.print("backed up vault to {s}\n", .{dest});
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "restore")) {
+        const src = firstPositional(rest) orelse {
+            stderr.writeAll("pm: restore needs a backup file path\n") catch {};
+            return error.MissingArgument;
+        };
+        if (try vaultExists(vault_path, allocator) and !hasFlag(rest, "--force")) {
+            stderr.writeAll("pm: vault already exists (use --force to replace it)\n") catch {};
+            return error.VaultExists;
+        }
+        const bytes = try readPathBytes(allocator, src);
+        defer allocator.free(bytes);
+        try writePathBytes(vault_path, bytes, allocator);
+        try stdout.print("restored vault from {s}\n", .{src});
+        return;
+    }
+
     stderr.writeAll("pm: unknown command (try: pm --help)\n") catch {};
     return error.UnknownCommand;
 }
@@ -274,6 +458,12 @@ pub fn main() void {
             error.AuthenticationFailed => stderr.print("pm: wrong master password or corrupt vault\n", .{}) catch {},
             error.InvalidMagic, error.UnsupportedVersion => stderr.print("pm: not a pm vault file (or corrupt)\n", .{}) catch {},
             error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument, error.NoSuchEntry => {},
+            error.NoCharacterSets => stderr.print("pm: no character sets enabled for generation\n", .{}) catch {},
+            error.LengthTooShort => stderr.print("pm: length too short for the enabled character sets\n", .{}) catch {},
+            error.InvalidLength => stderr.print("pm: invalid --length (use 1..512)\n", .{}) catch {},
+            error.InvalidFormat => stderr.print("pm: invalid --format (use json or csv)\n", .{}) catch {},
+            error.MalformedCsv => stderr.print("pm: malformed CSV import\n", .{}) catch {},
+            error.EmptyCsv => stderr.print("pm: empty CSV import\n", .{}) catch {},
             else => stderr.print("pm: {s}\n", .{@errorName(err)}) catch {},
         }
         std.process.exit(1);
