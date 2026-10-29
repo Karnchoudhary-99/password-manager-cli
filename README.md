@@ -38,6 +38,7 @@ pm export --format csv --out backup.csv            # plaintext export (0600) —
 pm import backup.csv --format csv                  # skips existing entries unless --force
 pm backup                                          # sealed copy to <vault>.bak (stays encrypted)
 pm restore vault.bak --force                       # replace the vault with a sealed backup
+pm change-password                                 # re-seal the vault under a new master password
 ```
 
 Environment variables:

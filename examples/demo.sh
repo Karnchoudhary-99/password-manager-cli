@@ -43,6 +43,10 @@ $PM list
 echo "--- remove bank, list again ---"
 $PM remove bank
 $PM list
+echo "--- change master password: old refused, new works ---"
+PM_NEW_MASTER_PASSWORD="demo-master-password-v2" $PM change-password
+PM_MASTER_PASSWORD=demo-master-password $PM list || true
+PM_MASTER_PASSWORD=demo-master-password-v2 $PM list
 echo "--- wrong master password is refused ---"
 PM_MASTER_PASSWORD=wrong-password $PM list || true
 echo "--- demo done (vault was in $DEMO_DIR, now deleted) ---"
