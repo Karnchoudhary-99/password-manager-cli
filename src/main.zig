@@ -364,7 +364,10 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
             return error.MissingArgument;
         };
         const format = try parseFormat(rest);
-        const text = try readPathBytes(allocator, file_path);
+        const text = readPathBytes(allocator, file_path) catch {
+            stderr.print("pm: cannot read import file '{s}'\n", .{file_path}) catch {};
+            return error.ImportFileUnreadable;
+        };
         defer allocator.free(text);
         const imported = switch (format) {
             .json => try ioformat_mod.fromJson(allocator, text),
@@ -429,7 +432,10 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
             stderr.writeAll("pm: vault already exists (use --force to replace it)\n") catch {};
             return error.VaultExists;
         }
-        const bytes = try readPathBytes(allocator, src);
+        const bytes = readPathBytes(allocator, src) catch {
+            stderr.print("pm: cannot read backup file '{s}'\n", .{src}) catch {};
+            return error.ImportFileUnreadable;
+        };
         defer allocator.free(bytes);
         try writePathBytes(vault_path, bytes, allocator);
         try stdout.print("restored vault from {s}\n", .{src});
@@ -457,7 +463,7 @@ pub fn main() void {
             error.FileNotFound => stderr.print("pm: no vault found (run: pm init first)\n", .{}) catch {},
             error.AuthenticationFailed => stderr.print("pm: wrong master password or corrupt vault\n", .{}) catch {},
             error.InvalidMagic, error.UnsupportedVersion => stderr.print("pm: not a pm vault file (or corrupt)\n", .{}) catch {},
-            error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument, error.NoSuchEntry => {},
+            error.VaultExists, error.PasswordMismatch, error.UnknownCommand, error.EntryExists, error.MissingArgument, error.NoSuchEntry, error.ImportFileUnreadable => {},
             error.NoCharacterSets => stderr.print("pm: no character sets enabled for generation\n", .{}) catch {},
             error.LengthTooShort => stderr.print("pm: length too short for the enabled character sets\n", .{}) catch {},
             error.InvalidLength => stderr.print("pm: invalid --length (use 1..512)\n", .{}) catch {},
